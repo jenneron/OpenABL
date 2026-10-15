@@ -1311,13 +1311,22 @@ index 395087e..97b00ae 100644
    gEfiMdePkgTokenSpaceGuid.PcdReportStatusCodePropertyMask|0x06
  
  ################################################################################
-@@ -279,4 +291,35 @@
+@@ -279,4 +291,44 @@
  			AesLib|QcomModulePkg/Library/aes/AesLib.inf
  			UbsanLib|QcomModulePkg/Library/UbsanLib/UbsanLib.inf
  			Lz4Lib|QcomModulePkg/Library/lz4/lib/Lz4Lib.inf
 +
 +			SerialPortLib|QcomModulePkg/Library/OpenAblSerialPortLib/OpenAblSerialPortLib.inf
 +	}
++
++# The additional partition driver does not fit the legacy 244 KiB image.
++!if $(OPENABL_MENU) == 1 && $(ABL_LARGE_IMAGE) == 1
++	MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf {
++		<LibraryClasses>
++			DebugLib|MdePkg/Library/BaseDebugLibNull/BaseDebugLibNull.inf
++			NULL|MdePkg/Library/BaseStackCheckLib/BaseStackCheckLib.inf
++	}
++!endif
 +
 +!if $(ABL_USB_HOST_BUNDLED_STACK)
 +	MdeModulePkg/Bus/Pci/NonDiscoverablePciDeviceDxe/NonDiscoverablePciDeviceDxe.inf {
@@ -1383,11 +1392,14 @@ index 226f6fb..a4f1044 100755
  gEmbeddedTokenSpaceGuid.PcdFlashFvMainBase|gEmbeddedTokenSpaceGuid.PcdFlashFvMainSize
  FV = FVMAIN_COMPACT
  
-@@ -115,6 +128,21 @@ READ_LOCK_STATUS   = TRUE
+@@ -115,6 +128,24 @@ READ_LOCK_STATUS   = TRUE
  FvNameGuid         = 046fae99-cf2e-49ed-a6a8-a1488b7e80d3
  
  INF QcomModulePkg/Application/LinuxLoader/LinuxLoader.inf
 +!if $(OPENABL_MENU) == 1
++!if $(ABL_LARGE_IMAGE) == 1
++INF MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
++!endif
 +# The menu program, built by build.sh. LinuxLoader starts it from this
 +# volume (BootLib/OpenAblMenu.c).
 +FILE APPLICATION = 3f1d0c7a-8e52-4b6d-a93e-51c27d04b86f {

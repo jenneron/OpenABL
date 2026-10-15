@@ -37,6 +37,8 @@
 /* FILE GUID of openabl-menu.efi in QcomModulePkg.fdf. */
 STATIC EFI_GUID mOpenAblMenuFileGuid = {
     0x3f1d0c7a, 0x8e52, 0x4b6d, {0xa9, 0x3e, 0x51, 0xc2, 0x7d, 0x04, 0xb8, 0x6f}};
+STATIC EFI_GUID mPartitionFileGuid = {
+    0x1fa1f39e, 0xfeff, 0x4aae, {0xbd, 0x7b, 0x38, 0xa0, 0x70, 0xa3, 0xb6, 0x09}};
 STATIC EFI_GUID mOpenAblStorageGuid = OPENABL_STORAGE_PROTOCOL_GUID;
 STATIC EFI_GUID mOpenAblAblLibGuid = OPENABL_ABL_LIB_PROTOCOL_GUID;
 
@@ -411,6 +413,25 @@ StartMenu (IN UINT32 Flags)
   gBS->UninstallProtocolInterface (HostHandle, &gOpenAblMenuHostProtocolGuid,
                                    &mHost);
   DEBUG ((EFI_D_ERROR, "OpenAblMenu: returned %r\n", Status));
+
+  /* Register the bundled partition driver once, after the early quirks and
+     before the ABL connects storage. Read our FV: XBL uses the same GUID. */
+  if (!EFI_ERROR (Status) && (Flags & OPENABL_MENU_FLAG_EARLY)) {
+    Pe32 = NULL;
+    if (!EFI_ERROR (Fv->ReadSection (Fv, &mPartitionFileGuid, EFI_SECTION_PE32,
+                                     0, &Pe32, &Pe32Size, &AuthStatus)) &&
+        Pe32 != NULL) {
+      EFI_STATUS DriverStatus;
+
+      DriverStatus = gBS->LoadImage (FALSE, gImageHandle, NULL, Pe32, Pe32Size,
+                                    &Image);
+      FreePool (Pe32);
+      if (!EFI_ERROR (DriverStatus)) {
+        DriverStatus = gBS->StartImage (Image, NULL, NULL);
+      }
+      DEBUG ((EFI_D_ERROR, "OpenAblMenu: start PartitionDxe: %r\n", DriverStatus));
+    }
+  }
   return Status;
 }
 
