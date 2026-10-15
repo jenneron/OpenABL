@@ -1067,11 +1067,21 @@ STATIC CONST UINT8 mAltLbaMask[52] = {
   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
   1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1};
 
-STATIC CONST GPT_SITE mGptSites[2] = {
+// SM8250: cbz w9, +0xc becomes b +0xc, allowing GPTs on logical partitions.
+STATIC CONST UINT8 mLogicalPartition[16] = {
+  HIDE (0x29), HIDE (0x19), HIDE (0x40), HIDE (0x39), HIDE (0x69), HIDE (0x00),
+  HIDE (0x00), HIDE (0x34), HIDE (0xf7), HIDE (0x0b), HIDE (0x41), HIDE (0xb2),
+  HIDE (0x13), HIDE (0x00), HIDE (0x00), HIDE (0x14)};
+STATIC CONST UINT8 mLogicalPartitionMask[16] = {
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+
+STATIC CONST GPT_SITE mGptSites[3] = {
   {"pmbr-gate", mPmbrGate, mPmbrGateMask, sizeof (mPmbrGate), 12, 0x14000006,
    0x14000001},
   {"alt-lba", mAltLba, mAltLbaMask, sizeof (mAltLba), 12, 0x54000a61,
    0x54000341},
+  {"logical-partition", mLogicalPartition, mLogicalPartitionMask,
+   sizeof (mLogicalPartition), 4, 0x34000069, 0x14000003},
 };
 
 // A site belongs to PartitionDxe if its name is within this distance.
@@ -1118,9 +1128,10 @@ QuirksGptClobber (
   BOOLEAN      HaveMe;
   UINT8        Sig0[sizeof (mPmbrGate)];
   UINT8        Sig1[sizeof (mAltLba)];
-  CONST UINT8 *Sigs[2]    = {Sig0, Sig1};
-  UINT32       Found[2]   = {0, 0};
-  UINT32       Patched[2] = {0, 0};
+  UINT8        Sig2[sizeof (mLogicalPartition)];
+  CONST UINT8 *Sigs[3]    = {Sig0, Sig1, Sig2};
+  UINT32       Found[3]   = {0, 0, 0};
+  UINT32       Patched[3] = {0, 0, 0};
 
   if (Chip != SM8250 || mGptDone) {
     return;
@@ -1133,6 +1144,7 @@ QuirksGptClobber (
   HaveMe = ImageRange (gImageHandle, &MeBase, &MeSize);
   Reveal (mGptSites[0].Sig, Sig0, mGptSites[0].Len);
   Reveal (mGptSites[1].Sig, Sig1, mGptSites[1].Len);
+  Reveal (mGptSites[2].Sig, Sig2, mGptSites[2].Len);
   for (UINTN Index = 0; Index < Count; Index++) {
     UINT64       Base;
     UINT64       Size;
@@ -1146,7 +1158,7 @@ QuirksGptClobber (
     }
     Img = (CONST UINT8 *)(UINTN)Base;
     for (UINTN Offset = 0; Offset + 4 <= Size; Offset += 4) {
-      for (INT32 Site = 0; Site < 2; Site++) {
+      for (INT32 Site = 0; Site < 3; Site++) {
         CONST GPT_SITE *Gpt = &mGptSites[Site];
         UINTN           Lo;
         UINTN           Hi;
@@ -1171,7 +1183,7 @@ QuirksGptClobber (
     }
   }
   gBS->FreePool (Images);
-  for (INT32 Site = 0; Site < 2; Site++) {
+  for (INT32 Site = 0; Site < 3; Site++) {
     LogPrint (
       Log, "gpt: %s sites=%llu patched=%llu", mGptSites[Site].Name,
       (UINT64)Found[Site], (UINT64)Patched[Site]
