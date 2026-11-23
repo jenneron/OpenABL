@@ -8,7 +8,8 @@
 
   A drive's models come from the .dtb files in \boot\grub (GRUB-based
   images), \dtbs, \dtbs\qcom, \dtb and \dtb\qcom (dtbloader,
-  distributions, U-Boot).
+  distributions, U-Boot), and .dtbauto or .dtb sections in UKIs under
+  \\EFI\\Linux.
 */
 
 #ifndef __EFI_MODELS_H__
@@ -33,8 +34,9 @@ typedef struct _SCANNED_MODELS OABL_VEC (SCANNED_MODEL) SCANNED_MODELS;
 VOID
 ModelsFree (IN OUT SCANNED_MODELS *Models);
 
-// Reads the devicetree for Model on Fs: the first matching .dtb file in
-// those folders. Other files are only read as far as their root's model.
+// Reads the devicetree for Model on Fs: the first matching loose file,
+// then embedded trees in UKIs. Other trees are only read as far as their
+// root's model.
 // FALSE if there is none. Caller frees Out with BufferFree.
 BOOLEAN
 ModelsDevicetreeFor (

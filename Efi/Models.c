@@ -12,13 +12,15 @@
 #include "Base/Memory.h"
 #include "Base/Print.h"
 #include "Base/Text.h"
+#include "Core/Bls.h"
 #include "Core/DeviceTree.h"
+#include "Core/Pe.h"
 #include "Core/Soc.h"
 #include "Base/Buffer.h"
 #include "Efi/Files.h"
 #include "Efi/Quirks.h"
 
-// The folders searched for devicetree files, in order, and only these.
+// The folders searched for loose devicetree files, in order.
 // \boot\grub is where GRUB-based images keep them; \dtbs is used by
 // dtbloader and distributions, \dtb by U-Boot, each also with the kernel's
 // qcom subfolder.
@@ -34,6 +36,8 @@ STATIC CONST CHAR8 *CONST mDtbDirs[] = {
 #define DTB_HEAD ((UINTN)4 << 10)
 // Limit on the strings block read with it.
 #define DTB_STRINGS_MAX ((UINTN)64 << 10)
+// UKIs with many .dtbauto sections need more than one page of headers.
+#define UKI_HEAD ((UINTN)32 << 10)
 
 VOID
 ModelsFree (IN OUT SCANNED_MODELS *Models)
@@ -129,12 +133,13 @@ typedef struct _DTB_PEEK {
   OABL_BUFFER Strings;
 } DTB_PEEK;
 
-// Reads the header and the root's properties at the start of Path, and its
-// strings block at the end, rather than the whole file.
+// Reads a tree's root properties and strings, from a file or a PE section.
 STATIC VOID
 PeekDtb (
   IN EFI_HANDLE   Fs,
   IN CONST CHAR8 *Path,
+  IN UINT64       Offset,
+  IN UINTN        Size,
   OUT DTB_PEEK   *Peek
 )
 {
@@ -144,15 +149,19 @@ PeekDtb (
   UINTN     Length;
 
   *Peek = (DTB_PEEK){0};
-  if (!FilesReadPart (Fs, Path, 0, DTB_HEAD, &Peek->Head) ||
+  if (!FilesReadPart (
+        Fs, Path, Offset, Size < DTB_HEAD ? Size : DTB_HEAD, &Peek->Head
+      ) ||
       !DtLayoutOf (Peek->Head.Data, Peek->Head.Len, &Layout) ||
+      Layout.Total > Size ||
       (Length = Layout.Total - Layout.StringsOffset) > DTB_STRINGS_MAX) {
     return;
   }
   // One byte more: a file that goes on past the tree may hold more trees,
   // which only DtFindAll on the whole file finds.
   if (!FilesReadPart (
-        Fs, Path, Layout.StringsOffset, Length + 1, &Peek->Strings
+        Fs, Path, Offset + Layout.StringsOffset,
+        Layout.Total < Size ? Length + 1 : Length, &Peek->Strings
       ) ||
       Peek->Strings.Len != Length) {
     return;
@@ -221,12 +230,70 @@ ReadDtbs (
         !(Path = SPrintAlloc ("%s\\%s", Dir, Entry->Name))) {
       continue;
     }
-    PeekDtb (Fs, Path, &Peek);
+    PeekDtb (Fs, Path, 0, MAX_UINTN, &Peek);
     if (Want (Context, &Peek) && FilesRead (Fs, Path, DTB_MAX, &Blob)) {
       Stop = Visit (Context, &Blob);
     }
     PeekFree (&Peek);
     BufferFree (&Blob);
+    FreePool (Path);
+  }
+  FilesEntriesFree (&Names);
+  return Stop;
+}
+
+// Uses the same filters and visitors for the trees embedded in UKIs.
+STATIC BOOLEAN
+ReadUkiDtbs (
+  IN EFI_HANDLE Fs,
+  IN DTB_WANT   Want,
+  IN DTB_VISIT  Visit,
+  IN OUT VOID  *Context
+)
+{
+  FILES_DIR_ENTRIES Names = {0};
+  BOOLEAN           Stop  = FALSE;
+
+  FilesList (Fs, BLS_UKI_DIR, &Names);
+  for (UINTN Index = 0; Index < Names.Count && !Stop; Index++) {
+    CONST FILES_DIR_ENTRY *Entry    = &Names.Items[Index];
+    PE_SECTIONS           Sections = {0};
+    OABL_BUFFER           Head     = {0};
+    CHAR8                *Path;
+
+    if (Entry->IsDir || !TextEndsWithNoCase (TextOf (Entry->Name), ".efi") ||
+        !(Path = SPrintAlloc ("%s\\%s", BLS_UKI_DIR, Entry->Name))) {
+      continue;
+    }
+    if (FilesReadPart (Fs, Path, 0, UKI_HEAD, &Head) &&
+        PeSections (Head.Data, Head.Len, &Sections) &&
+        PeFind (Sections.Items, Sections.Count, ".linux")) {
+      for (UINTN Section = 0; Section < Sections.Count && !Stop; Section++) {
+        CONST PE_SECTION *Tree = &Sections.Items[Section];
+        OABL_BUFFER       Blob = {0};
+        DTB_PEEK          Peek;
+        UINT64            Offset;
+        UINTN             Size;
+
+        if (!AsciiStrEq (Tree->Name, ".dtbauto") &&
+            !AsciiStrEq (Tree->Name, ".dtb")) {
+          continue;
+        }
+        PeSectionDataRange (Tree, &Offset, &Size);
+        if (!Size || Size > DTB_MAX) {
+          continue;
+        }
+        PeekDtb (Fs, Path, Offset, Size, &Peek);
+        if (Want (Context, &Peek) &&
+            FilesReadPart (Fs, Path, Offset, Size, &Blob) && Blob.Len == Size) {
+          Stop = Visit (Context, &Blob);
+        }
+        PeekFree (&Peek);
+        BufferFree (&Blob);
+      }
+    }
+    VecFree (&Sections);
+    BufferFree (&Head);
     FreePool (Path);
   }
   FilesEntriesFree (&Names);
@@ -342,7 +409,9 @@ ModelsDevicetreeFor (
       return TRUE;
     }
   }
-  return FALSE;
+  FIND_VISIT Find = {Model, Out};
+
+  return ReadUkiDtbs (Fs, FindWant, FindVisit, &Find);
 }
 
 STATIC BOOLEAN
@@ -381,16 +450,21 @@ ModelsScan (
     Soc = NULL;
   }
   for (UINTN Drive = 0; Drive < Count; Drive++) {
-    for (UINTN Dir = 0; Dir < N_DTB_DIRS; Dir++) {
-      SCAN_VISIT Scan  = {Out, Soc, 0, 0};
-      UINTN      First = Out->Count;
+    for (UINTN Dir = 0; Dir <= N_DTB_DIRS; Dir++) {
+      CONST CHAR8 *Folder = Dir < N_DTB_DIRS ? mDtbDirs[Dir] : BLS_UKI_DIR;
+      SCAN_VISIT   Scan   = {Out, Soc, 0, 0};
+      UINTN        First  = Out->Count;
 
-      ReadDtbs (Drives[Drive], mDtbDirs[Dir], ScanWant, ScanVisit, &Scan);
+      if (Dir < N_DTB_DIRS) {
+        ReadDtbs (Drives[Drive], Folder, ScanWant, ScanVisit, &Scan);
+      } else {
+        ReadUkiDtbs (Drives[Drive], ScanWant, ScanVisit, &Scan);
+      }
       if (Scan.Trees) {
         LogPrint (
           Log,
           "scan: drive %llu: %llu new model(s) from %s, %llu for other SoCs",
-          (UINT64)Drive, (UINT64)(Out->Count - First), mDtbDirs[Dir],
+          (UINT64)Drive, (UINT64)(Out->Count - First), Folder,
           (UINT64)Scan.Others
         );
       }

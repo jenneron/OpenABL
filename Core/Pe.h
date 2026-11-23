@@ -53,7 +53,7 @@ PeMachine (
   OUT UINT16     *Machine
 );
 
-// Reads the section table. Head must cover the headers; 4 KiB is enough.
+// Reads the section table. Head must cover all section headers.
 BOOLEAN
 PeSections (
   IN CONST UINT8  *Head,
