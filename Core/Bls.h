@@ -133,13 +133,14 @@ BlsOsRelease (
 VOID
 BlsPairsFree (IN OUT BLS_PAIRS *Pairs);
 
-// Makes an entry from a UKI's .osrel and .uname sections. Uname is {NULL, 0}
-// if the UKI has none.
+// Makes an entry for one UKI profile. Uname and Profile may be empty.
 BOOLEAN
 BlsUkiEntry (
   IN CONST CHAR8 *FileName,
   IN OABL_TEXT    Osrel,
   IN OABL_TEXT    Uname,
+  IN OABL_TEXT    Profile,
+  IN UINTN        ProfileIndex,
   OUT BOOT_ENTRY *Out
 );
 

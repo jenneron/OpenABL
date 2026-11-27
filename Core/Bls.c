@@ -666,17 +666,25 @@ BlsUkiEntry (
   IN CONST CHAR8 *FileName,
   IN OABL_TEXT    Osrel,
   IN OABL_TEXT    Uname,
+  IN OABL_TEXT    Profile,
+  IN UINTN        ProfileIndex,
   OUT BOOT_ENTRY *Out
 )
 {
-  STATIC CONST CHAR8 *CONST TitleKeys[]   = {"PRETTY_NAME", "NAME", NULL};
-  STATIC CONST CHAR8 *CONST VersionKeys[] = {"IMAGE_VERSION", "VERSION_ID",
-                                             "BUILD_ID", NULL};
-  STATIC CONST CHAR8 *CONST SortKeys[]    = {"IMAGE_ID", "ID", NULL};
+  STATIC CONST CHAR8 *CONST TitleKeys[]    = {"PRETTY_NAME", "NAME", NULL};
+  STATIC CONST CHAR8 *CONST VersionKeys[]  = {"IMAGE_VERSION", "VERSION_ID",
+                                              "BUILD_ID", NULL};
+  STATIC CONST CHAR8 *CONST SortKeys[]     = {"IMAGE_ID", "ID", NULL};
+  STATIC CONST CHAR8 *CONST ProfileIds[]   = {"ID", NULL};
+  STATIC CONST CHAR8 *CONST ProfileNames[] = {"TITLE", NULL};
   BLS_PAIRS                 Pairs;
+  BLS_PAIRS                 ProfilePairs;
   BOOT_ENTRY                Entry = {.Source      = BOOT_ENTRY_SOURCE_UKI,
                                      .Action.Kind = BOOT_ENTRY_ACTION_EFI};
   CONST CHAR8              *Value;
+  CONST CHAR8              *ProfileId;
+  CONST CHAR8              *ProfileTitle;
+  CHAR8                     Number[32];
   BOOLEAN                   Ok = TRUE;
 
   *Out = (BOOT_ENTRY){0};
@@ -685,17 +693,44 @@ BlsUkiEntry (
   }
   Entry.Id =
     BlsSplitCounter (FileName, ".efi", &Entry.HasCounter, &Entry.Counter);
-  Value       = Get (&Pairs, TitleKeys);
-  Entry.Title = AsciiStrDup (Value ? Value : "Linux");
+  if (!BlsOsRelease (Profile, &ProfilePairs)) {
+    BlsPairsFree (&Pairs);
+    BootEntryFree (&Entry);
+    return FALSE;
+  }
+  Value        = Get (&Pairs, TitleKeys);
+  Value        = Value ? Value : "Linux";
+  ProfileId    = Get (&ProfilePairs, ProfileIds);
+  ProfileTitle = Get (&ProfilePairs, ProfileNames);
+  if (ProfileIndex) {
+    SPrint (Number, sizeof (Number), "%u", (UINT32)ProfileIndex);
+    Entry.IdWithoutProfile = Entry.Id;
+    Entry.Id               = Entry.IdWithoutProfile
+                               ? SPrintAlloc (
+                                   "%s@%s", Entry.IdWithoutProfile,
+                                   ProfileId ? ProfileId : Number
+                                 )
+                               : NULL;
+    Entry.Action.Options   = SPrintAlloc ("@%s", Number);
+    Ok                     = Entry.Action.Options != NULL;
+    ProfileTitle           = ProfileTitle ? ProfileTitle : ProfileId;
+  }
+  if (ProfileTitle) {
+    Entry.Title = SPrintAlloc ("%s (%s)", Value, ProfileTitle);
+  } else if (ProfileIndex) {
+    Entry.Title = SPrintAlloc ("%s (Profile %s)", Value, Number);
+  } else {
+    Entry.Title = AsciiStrDup (Value);
+  }
   Value       = Get (&Pairs, VersionKeys);
   if (Value) {
     Entry.Version = AsciiStrDup (Value);
-    Ok            = Entry.Version != NULL;
+    Ok            = Ok && Entry.Version;
   } else {
     Uname = TextTrim (Uname);
     if (Uname.Len) {
       Entry.Version = TextDup (Uname);
-      Ok            = Entry.Version != NULL;
+      Ok            = Ok && Entry.Version;
     }
   }
   Value = Get (&Pairs, SortKeys);
@@ -707,6 +742,7 @@ BlsUkiEntry (
   Entry.Action.Path = Entry.File ? AsciiStrDup (Entry.File) : NULL;
   Ok                = Ok && Entry.Id && Entry.Title && Entry.Action.Path;
   BlsPairsFree (&Pairs);
+  BlsPairsFree (&ProfilePairs);
   if (!Ok) {
     BootEntryFree (&Entry);
     return FALSE;
@@ -835,7 +871,14 @@ BlsCompare (
       return Order;
     }
   }
-  Order = BlsVerCmp (B->Id, A->Id);
+  Order = BlsVerCmp (
+    B->IdWithoutProfile ? B->IdWithoutProfile : B->Id,
+    A->IdWithoutProfile ? A->IdWithoutProfile : A->Id
+  );
+  if (Order) {
+    return Order;
+  }
+  Order = Cmp (A->IdWithoutProfile != NULL, B->IdWithoutProfile != NULL);
   if (Order) {
     return Order;
   }

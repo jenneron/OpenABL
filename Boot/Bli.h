@@ -31,6 +31,7 @@ extern EFI_GUID gBliVendor;
 #define BLI_FEATURE_XBOOTLDR   ((UINT64)1 << 5)
 #define BLI_FEATURE_SORT_KEY   ((UINT64)1 << 8)
 #define BLI_FEATURE_DEVICETREE ((UINT64)1 << 10)
+#define BLI_FEATURE_MULTI_PROFILE_UKI ((UINT64)1 << 14)
 
 // Reads a variable as UTF-8 text. Returns NULL if it is unset.
 // Caller frees the result.

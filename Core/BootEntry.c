@@ -52,6 +52,7 @@ VOID
 BootEntryFree (IN OUT BOOT_ENTRY *Entry)
 {
   FreePool (Entry->Id);
+  FreePool (Entry->IdWithoutProfile);
   FreePool (Entry->Title);
   FreePool (Entry->Version);
   FreePool (Entry->SortKey);
@@ -112,7 +113,9 @@ BootEntryClone (
                           .HasCounter = Entry->HasCounter,
                           .Counter    = Entry->Counter};
   To->Kind = From->Kind;
-  Ok = CloneStr (&Out->Id, Entry->Id) && CloneStr (&Out->Title, Entry->Title) &&
+  Ok = CloneStr (&Out->Id, Entry->Id) &&
+       CloneStr (&Out->IdWithoutProfile, Entry->IdWithoutProfile) &&
+       CloneStr (&Out->Title, Entry->Title) &&
        CloneStr (&Out->Version, Entry->Version) &&
        CloneStr (&Out->SortKey, Entry->SortKey) &&
        CloneStr (&Out->MachineId, Entry->MachineId) &&

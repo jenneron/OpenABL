@@ -151,21 +151,18 @@ Type1Entries (
   FilesEntriesFree (&List);
 }
 
-// Reads a UKI's section Name as text, up to TEXT_LIMIT bytes. Returns NULL
-// if there is no such section.
+// Reads a UKI section as text, up to TEXT_LIMIT bytes.
 STATIC CHAR8 *
 Section (
-  IN EFI_HANDLE         Fs,
-  IN CONST CHAR8       *Path,
-  IN CONST PE_SECTIONS *Sections,
-  IN CONST CHAR8       *Name
+  IN EFI_HANDLE        Fs,
+  IN CONST CHAR8      *Path,
+  IN CONST PE_SECTION *Found OPTIONAL
 )
 {
-  CONST PE_SECTION *Found = PeFind (Sections->Items, Sections->Count, Name);
-  OABL_BUFFER       Data;
-  UINT64            Offset;
-  UINTN             Len;
-  CHAR8            *Text;
+  OABL_BUFFER Data;
+  UINT64      Offset;
+  UINTN       Len;
+  CHAR8      *Text;
 
   if (!Found) {
     return NULL;
@@ -181,6 +178,60 @@ Section (
   return Text;
 }
 
+// Sections before the first .profile apply to all profiles. Each .profile
+// starts a new entry and its sections override the shared ones.
+STATIC VOID
+UkiProfiles (
+  IN EFI_HANDLE           Fs,
+  IN CONST CHAR8         *Path,
+  IN CONST CHAR8         *Name,
+  IN CONST PE_SECTIONS   *Sections,
+  IN OUT BOOT_ENTRY_LIST *Out
+)
+{
+  CONST PE_SECTION *Base   = Sections->Items;
+  CONST PE_SECTION *End    = Base + Sections->Count;
+  CONST PE_SECTION *Marker = PeFind (Base, Sections->Count, ".profile");
+  UINTN             Shared = (Marker ? Marker : End) - Base;
+  BOOLEAN           Linux  = PeFind (Base, Shared, ".linux") != NULL;
+  CHAR8            *Osrel  = Section (Fs, Path, PeFind (Base, Shared, ".osrel"));
+  CHAR8            *Uname  = Section (Fs, Path, PeFind (Base, Shared, ".uname"));
+
+  for (UINTN Index = 0;; Index++) {
+    CONST PE_SECTION *Start = Marker ? Marker + 1 : End;
+    CONST PE_SECTION *Next  = PeFind (Start, End - Start, ".profile");
+    UINTN             Count = (Next ? Next : End) - Start;
+
+    if (Linux || PeFind (Start, Count, ".linux")) {
+      CHAR8      *Profile      = Section (Fs, Path, Marker);
+      CHAR8      *ProfileOsrel = Section (
+        Fs, Path, PeFind (Start, Count, ".osrel")
+      );
+      CHAR8      *ProfileUname = Section (
+        Fs, Path, PeFind (Start, Count, ".uname")
+      );
+      BOOT_ENTRY  Entry;
+
+      if (BlsUkiEntry (
+            Name, TextOf (ProfileOsrel ? ProfileOsrel : Osrel),
+            TextOf (ProfileUname ? ProfileUname : Uname), TextOf (Profile),
+            Index, &Entry
+          )) {
+        PushEntry (Out, &Entry);
+      }
+      FreePool (Profile);
+      FreePool (ProfileOsrel);
+      FreePool (ProfileUname);
+    }
+    if (!Next) {
+      break;
+    }
+    Marker = Next;
+  }
+  FreePool (Osrel);
+  FreePool (Uname);
+}
+
 STATIC VOID
 UkiEntries (
   IN EFI_HANDLE           Fs,
@@ -193,11 +244,8 @@ UkiEntries (
   for (UINTN Index = 0; Index < List.Count; Index++) {
     CONST CHAR8 *Name     = List.Items[Index].Name;
     PE_SECTIONS  Sections = {0};
-    BOOT_ENTRY   Entry;
     CONST CHAR8 *Why;
     CHAR8       *Path;
-    CHAR8       *Osrel;
-    CHAR8       *Uname;
 
     if (List.Items[Index].IsDir ||
         !TextEndsWithNoCase (TextOf (Name), ".efi")) {
@@ -212,16 +260,7 @@ UkiEntries (
     } else if (!PeFind (Sections.Items, Sections.Count, ".linux")) {
       SerialLog ("  %s: no .linux section, not a UKI; skipped", Path);
     } else {
-      Osrel = Section (Fs, Path, &Sections, ".osrel");
-      Uname = Section (Fs, Path, &Sections, ".uname");
-      if (BlsUkiEntry (
-            Name, TextOf (Osrel ? Osrel : ""),
-            Uname ? TextOf (Uname) : (OABL_TEXT){NULL, 0}, &Entry
-          )) {
-        PushEntry (Out, &Entry);
-      }
-      FreePool (Osrel);
-      FreePool (Uname);
+      UkiProfiles (Fs, Path, Name, &Sections, Out);
     }
     VecFree (&Sections);
     FreePool (Path);

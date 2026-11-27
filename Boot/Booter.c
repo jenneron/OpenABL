@@ -501,6 +501,69 @@ Start (
 typedef struct _ID_LIST
 OABL_VEC (CHAR8 *) ID_LIST;
 
+// Profiles from the same UKI share one file and one boot counter.
+STATIC CHAR8 *
+CountTry (
+  IN EFI_HANDLE           Fs,
+  IN OUT BOOT_ENTRY_LIST *Entries,
+  IN CONST BOOT_ENTRY    *Entry
+)
+{
+  BLS_COUNTER Next = BlsCounterBumped (Entry->Counter);
+  CHAR8      *Name = BlsCountedName (
+    Entry->IdWithoutProfile ? Entry->IdWithoutProfile : Entry->Id, Next
+  );
+  OABL_TEXT   Parent = BootEntryParent (Entry->File);
+  INT32       Length = TextEqStr (Parent, "\\") ? 0 : (INT32)Parent.Len;
+  CHAR8      *Path   =
+    Name ? SPrintAlloc ("%.*s\\%s", Length, Parent.Ptr, Name) : NULL;
+  CHAR8     **Files  = AllocateZeroArray (Entries->Count, sizeof (*Files));
+  EFI_STATUS  Status = EFI_OUT_OF_RESOURCES;
+
+  if (Path && Files) {
+    // Allocate the replacement paths before changing the file on disk.
+    for (UINTN Index = 0; Index < Entries->Count; Index++) {
+      if (AsciiStrEq (Entries->Items[Index].File, Entry->File)) {
+        Files[Index] = AsciiStrDup (Path);
+        if (!Files[Index]) {
+          goto Done;
+        }
+      }
+    }
+    Status = FilesRename (Fs, Entry->File, Name);
+    if (Status == EFI_SUCCESS) {
+      for (UINTN Index = 0; Index < Entries->Count; Index++) {
+        if (Files[Index]) {
+          BOOT_ENTRY *Stored = &Entries->Items[Index];
+
+          FreePool (Stored->File);
+          Stored->File    = Files[Index];
+          Stored->Counter = Next;
+          Files[Index]    = NULL;
+        }
+      }
+    }
+  }
+Done:
+  if (Files) {
+    for (UINTN Index = 0; Index < Entries->Count; Index++) {
+      FreePool (Files[Index]);
+    }
+  }
+  FreePool (Files);
+  FreePool (Name);
+  if (Status == EFI_SUCCESS) {
+    SerialLog ("  boot counting: %s -> %s", Entry->File, Path);
+    return Path;
+  }
+  SerialLog (
+    "  boot counting: renaming %s failed (%s); booting anyway", Entry->File,
+    StatusDebug (Status, (CHAR8[BOOT_STATUS_DEBUG_SIZE]){0})
+  );
+  FreePool (Path);
+  return NULL;
+}
+
 // Starts a Boot Loader Specification entry or extlinux label. Counts the
 // try, loads the image, sets the Boot Loader Interface variables, then
 // installs the devicetree and runs it.
@@ -523,7 +586,6 @@ StartEntry (
   ID_LIST                    Ids = {0};
   BOOT_ENTRY                 Entry;
   OUTCOME                    Outcome;
-  CHAR8                     *File;
   CHAR8                     *CountPath = NULL;
   CHAR8                     *Err       = NULL;
   CHAR8                     *ImagePath;
@@ -539,47 +601,10 @@ StartEntry (
   );
 
   // Automatic Boot Assessment. Record the try before booting.
-  File = AsciiStrDup (Entry.File);
-  if (!File) {
-    BootEntryFree (&Entry);
-    return Skipped (AsciiStrDup ("out of memory"));
-  }
   if (Entry.HasCounter) {
-    BLS_COUNTER Next = BlsCounterBumped (Entry.Counter);
-    CHAR8      *Name = BlsCountedName (Entry.Id, Next);
-    EFI_STATUS  Status =
-      Name ? FilesRename (Fs, Entry.File, Name) : EFI_OUT_OF_RESOURCES;
-
-    if (Status == EFI_SUCCESS) {
-      OABL_TEXT Parent = BootEntryParent (Entry.File);
-      CHAR8    *Renamed =
-        TextEqStr (Parent, "\\")
-          ? SPrintAlloc ("\\%s", Name)
-          : SPrintAlloc ("%.*s\\%s", (INT32)Parent.Len, Parent.Ptr, Name);
-
-      if (Renamed) {
-        BOOT_ENTRY *Stored =
-          &Booter->Volumes.Items[VolumeIndex].Entries.Items[EntryIndex];
-        CHAR8 *StoredFile = AsciiStrDup (Renamed);
-
-        FreePool (File);
-        File = Renamed;
-        SerialLog ("  boot counting: %s -> %s", Entry.File, File);
-        if (StoredFile) {
-          FreePool (Stored->File);
-          Stored->File = StoredFile;
-        }
-        Stored->HasCounter = TRUE;
-        Stored->Counter    = Next;
-        CountPath          = AsciiStrDup (File);
-      }
-    } else {
-      SerialLog (
-        "  boot counting: renaming %s failed (%s); booting anyway", Entry.File,
-        StatusDebug (Status, (CHAR8[BOOT_STATUS_DEBUG_SIZE]){0})
-      );
-    }
-    FreePool (Name);
+    CountPath = CountTry (
+      Fs, &Booter->Volumes.Items[VolumeIndex].Entries, &Entry
+    );
   }
 
   if (Entry.Action.Kind == BOOT_ENTRY_ACTION_LINUX) {
@@ -615,8 +640,10 @@ StartEntry (
   } else {
     // A UKI is the entry file itself, which boot counting may just have
     // renamed.
-    CONST CHAR8 *Path =
-      AsciiStrEq (Entry.Action.Path, Entry.File) ? File : Entry.Action.Path;
+    CONST CHAR8 *Path = Entry.Source == BOOT_ENTRY_SOURCE_UKI ||
+                        AsciiStrEq (Entry.Action.Path, Entry.File)
+      ? (CountPath ? CountPath : Entry.File)
+      : Entry.Action.Path;
     OABL_BUFFER Node = {0};
     OABL_BUFFER Full = {0};
     BOOLEAN     Loaded;
@@ -680,7 +707,6 @@ Done:
   BufferFree (&Options);
   LinuxBootInitrdFree (Initrd);
   FreePool (CountPath);
-  FreePool (File);
   BootEntryFree (&Entry);
   return Outcome;
 }

@@ -71,9 +71,11 @@ typedef struct _BOOT_ENTRY_ACTION {
 } BOOT_ENTRY_ACTION;
 
 typedef struct _BOOT_ENTRY {
-  // Boot Loader Specification id: the file name without its boot counter
-  // (debian-6.12.conf, fedora.efi), or extlinux:<label>.
+  // Boot Loader Specification id, e.g. fedora.efi or fedora.efi@rescue,
+  // without the boot counter. For extlinux this is extlinux:<label>.
   CHAR8            *Id;
+  // Set for secondary UKI profiles, which share the primary's file.
+  CHAR8            *IdWithoutProfile;
   CHAR8            *Title;
   CHAR8            *Version;
   CHAR8            *SortKey;
